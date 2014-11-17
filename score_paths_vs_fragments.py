@@ -6,6 +6,14 @@ import numpy as np
 import os
 import sys
 import argparse
+import gzip
+import io
+
+try:
+    import pyRMSD
+except ImportError:
+    import Bio.PDB
+    import Bio.PDB.Atom as Atom
 
 class FragmentData:
     def __init__ (self, split_lines):
@@ -47,16 +55,24 @@ class FragmentData:
         return self.length
 
 def parse_fragment_data(frag_file):
-    fragment_data = []
-    with open(frag_file, 'r') as f:
-        split_lines = []
-        for line in f:
-            split_line = line.strip().split()
-            if len(split_line) >= 11:
-                split_lines.append(split_line)
-            elif len(split_line) == 0 and len(split_lines) > 0:
-                fragment_data.append( FragmentData(split_lines) )
-                split_lines = []
+    fragment_data = {}
+
+    if frag_file.endswith('.gz'):
+        f = io.TextIOWrapper(io.BufferedReader(gzip.open(frag_file)))
+    else:
+        f = open(frag_file, 'r')
+
+    split_lines = []
+    for line in f:
+        split_line = line.strip().split()
+        if len(split_line) >= 11:
+            split_lines.append(split_line)
+        elif len(split_line) == 0 and len(split_lines) > 0:
+            fd = FragmentData(split_lines)
+            fragment_data[len(fd)] = fd
+            split_lines = []
+
+    f.close()
 
     return fragment_data
 
@@ -76,6 +92,15 @@ def parse_anchor_data( anchor_file ):
             if len( split_line ) == 6:
                 anchor_points[int(split_line[1])] = (float(split_line[2]), float(split_line[3]), float(split_line[4]))
     return anchor_points
+
+def calc_rms(ref_atoms, alt_atoms):
+    assert( len(ref_atoms) == len(alt_atoms) )
+    if pyRMSD:
+        pass
+    else:
+        super_imposer = Bio.PDB.Superimposer()
+        super_imposer.set_atoms(ref_atoms, alt_atoms)
+        return super_imposer.rms
 
 def main():
     parser = argparse.ArgumentParser(description=program_description)
@@ -97,11 +122,14 @@ def main():
     assert( os.path.isfile( args.anchor_file) )
 
     fragment_data = parse_fragment_data( args.fragment_file )
-    all_coords = [x.get_coords() for x in fragment_data]
+    all_coords = [x.get_coords() for x in fragment_data.values()]
     path_data = parse_path_data( args.path_file )
     anchor_points = parse_anchor_data( args.anchor_file )
-    for path_coords in [[anchor_points[x] for x in path] for path in path_data]:
-        print path_coords
+    for i, path_coords in enumerate([[anchor_points[x] for x in path] for path in path_data]):
+        path_length = len(path_coords)
+        print len(fragment_data[path_length])
+        for j, fragment_coords in enumerate(fragment_data[path_length].get_coords()):
+            print i, j, path_coords, fragment_coords
 
 if __name__ == "__main__":
     main()
