@@ -23,6 +23,7 @@ try:
     from pyRMSD.matrixHandler import MatrixHandler
     import pyRMSD.RMSDCalculator
 except ImportError:
+    print 'Warning: could not import faster RMSD module. Falling back to slower biopython...'
     pyRMSD = None
     import Bio.PDB
     import Bio.PDB.Atom as Atom
