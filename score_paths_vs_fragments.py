@@ -241,9 +241,11 @@ def main():
     assert( os.path.isfile( args.path_file) )
     assert( os.path.isfile( args.anchor_file) )
 
+    print 'Loading fragment data'
     fragment_position_data = parse_fragment_data( args.fragment_file )
-    # all_coords = [x.get_coords() for x in fragment_data.values()]
+    print 'Loading path data'
     path_data = parse_path_data( args.path_file )
+    print 'Loading anchor point data'
     anchor_points = parse_anchor_data( args.anchor_file )
 
     pool = multiprocessing.Pool()
