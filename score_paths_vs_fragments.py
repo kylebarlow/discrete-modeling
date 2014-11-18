@@ -259,8 +259,8 @@ def main():
     for i, path_coords in enumerate([[anchor_points[x] for x in path] for path in path_data[:50]]):
         path_length = len(path_coords)
         best_rms = float("inf")
-        helper_callback(rms_against_all_fragments(i, path_coords))
-        # pool.apply_async(rms_against_all_fragments, (i, path_coords), callback=helper_callback)
+        # helper_callback(rms_against_all_fragments(i, path_coords))
+        pool.apply_async(rms_against_all_fragments, (i, path_coords), callback=helper_callback)
         
     pool.close()
     pool.join()
