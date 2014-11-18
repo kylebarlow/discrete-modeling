@@ -11,6 +11,10 @@ import io
 import time
 import math
 
+import ctypes
+import multiprocessing
+from multiprocessing.sharedctypes import Value, Array, RawArray
+
 try:
     import pyRMSD
     from pyRMSD.matrixHandler import MatrixHandler
@@ -102,10 +106,7 @@ class Fragment:
         self.coords_cached = False
 
     def get_coords(self):
-        if not self.coords_cached:
-            self.coords = [(x, y, z) for x, y, z in zip(self.x_list, self.y_list, self.z_list)]
-            self.coords_cached = True
-        return self.coords
+        return [(x, y, z) for x, y, z in zip(self.x_list, self.y_list, self.z_list)]
 
     def __len__ (self):
         return self.length
@@ -140,7 +141,7 @@ class FragmentPositionData:
         return len(self.fragment_list)
 
 def parse_fragment_data(frag_file):
-    fragment_data = {}
+    fragment_position_data = {}
 
     if frag_file.endswith('.gz'):
         f = io.TextIOWrapper(io.BufferedReader(gzip.open(frag_file)))
@@ -149,6 +150,7 @@ def parse_fragment_data(frag_file):
 
     split_lines = []
     current_start_position = None
+    coordinate_count = 0
     for line in f:
         split_line = line.strip().split()
         if len(split_line) >= 11:
@@ -158,15 +160,37 @@ def parse_fragment_data(frag_file):
                 current_start_position = int(split_line[1])
         elif len(split_line) == 0 and len(split_lines) > 0:
             fd = Fragment(split_lines)
+            coordinate_count += len(fd)
             assert( current_start_position )
-            if current_start_position not in fragment_data:
-                fragment_data[current_start_position] = FragmentPositionData(current_start_position)
-            fragment_data[current_start_position].add_fragment( fd, current_start_position )
+            if current_start_position not in fragment_position_data:
+                fragment_position_data[current_start_position] = FragmentPositionData(current_start_position)
+            fragment_position_data[current_start_position].add_fragment( fd, current_start_position )
             split_lines = []
 
     f.close()
 
-    return fragment_data
+    global coord_array
+    global starting_position_array
+    global fragment_number_array
+    coord_array = multiprocessing.sharedctypes.Array('d', coordinate_count*3, lock=False)
+    starting_position_array = multiprocessing.sharedctypes.Array('L', coordinate_count, lock=False)
+    fragment_number_array = multiprocessing.sharedctypes.Array('L', coordinate_count, lock=False)
+    coord_array_i = 0
+    i = 0
+    for start_position in sorted(fragment_position_data.keys()):
+        for fragment_index, fragment in enumerate(fragment_position_data[start_position]):
+            for coords in fragment.get_coords():
+                starting_position_array[i] = start_position
+                fragment_number_array[i] = fragment_index
+                i += 1
+                for coord in coords:
+                    coord_array[coord_array_i] = coord
+                    coord_array_i += 1
+
+    assert( coord_array_i == coordinate_count*3)
+    assert( i == coordinate_count )
+
+    return fragment_position_data
 
 def parse_path_data( path_file ):
     path_data = []
@@ -186,6 +210,7 @@ def parse_anchor_data( anchor_file ):
     return anchor_points
 
 def calc_rms(ref_coords, alt_coords):
+    # print ref_coords, alt_coords
     assert( len(ref_coords) == len(alt_coords) )
     if pyRMSD:
         calculator = pyRMSD.RMSDCalculator.RMSDCalculator("QCP_SERIAL_CALCULATOR", np.array([ref_coords, alt_coords]))
@@ -216,26 +241,57 @@ def main():
     assert( os.path.isfile( args.path_file) )
     assert( os.path.isfile( args.anchor_file) )
 
-    fragment_data = parse_fragment_data( args.fragment_file )
+    fragment_position_data = parse_fragment_data( args.fragment_file )
     # all_coords = [x.get_coords() for x in fragment_data.values()]
     path_data = parse_path_data( args.path_file )
     anchor_points = parse_anchor_data( args.anchor_file )
+
+    pool = multiprocessing.Pool()
+    results_dict = {}
     r = Reporter('calculating RMS for all paths vs. all first fragments for each position', entries='paths')
     r.total_count = len(path_data[:50])
-    print 'total count:', r.total_count
+
+    def helper_callback(results_tuple):
+        path_number, rms_results = results_tuple
+        results_dict[path_number] = rms_results
+        r.increment_report()
+
     for i, path_coords in enumerate([[anchor_points[x] for x in path] for path in path_data[:50]]):
         path_length = len(path_coords)
         best_rms = float("inf")
-        rms_results = []
-        for fragment_position in fragment_data.values():
-            for j, fragment in enumerate(fragment_position):
-                fragment_coords = fragment.get_coords()
-                rms = calc_rms(fragment_coords, path_coords)
-                rms_results.append( (rms, fragment_position.start_position, j) )
-        rms_results.sort()
-        r.increment_report()
-
+        helper_callback(rms_against_all_fragments(i, path_coords))
+        # pool.apply_async(rms_against_all_fragments, (i, path_coords), callback=helper_callback)
+        
+    pool.close()
+    pool.join()
     r.done()
+
+def rms_against_all_fragments(path_number, path_coords):
+    rms_results = []
+
+    fragment_coords = []
+    last_fragment_number = fragment_number_array[0]
+    last_starting_position = starting_position_array[0]
+    coord_array_index = 0
+    for i in xrange(len(starting_position_array)):
+        starting_position = starting_position_array[i]
+        fragment_number = fragment_number_array[i]
+        if (starting_position != last_starting_position) or (fragment_number != last_fragment_number):
+            rms = calc_rms(fragment_coords, path_coords)
+            rms_results.append( (rms, last_starting_position, last_fragment_number) )
+            fragment_coords = []
+            last_fragment_number = fragment_number
+            last_starting_position = starting_position
+
+        fragment_coords.append((
+            coord_array[coord_array_index],
+            coord_array[coord_array_index+1],
+            coord_array[coord_array_index+2]
+        ))
+        coord_array_index += 3
+            
+    rms_results.sort()
+    return (path_number, rms_results)
 
 if __name__ == "__main__":
     main()
