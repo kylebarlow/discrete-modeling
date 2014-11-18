@@ -249,14 +249,14 @@ def main():
     pool = multiprocessing.Pool()
     results_dict = {}
     r = Reporter('calculating RMS for all paths vs. all first fragments for each position', entries='paths')
-    r.total_count = len(path_data[:50])
+    r.total_count = len(path_data)
 
     def helper_callback(results_tuple):
         path_number, rms_results = results_tuple
         results_dict[path_number] = rms_results
         r.increment_report()
 
-    for i, path_coords in enumerate([[anchor_points[x] for x in path] for path in path_data[:50]]):
+    for i, path_coords in enumerate([[anchor_points[x] for x in path] for path in path_data]):
         path_length = len(path_coords)
         best_rms = float("inf")
         # helper_callback(rms_against_all_fragments(i, path_coords))
