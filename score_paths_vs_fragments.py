@@ -13,6 +13,8 @@ import math
 
 try:
     import pyRMSD
+    from pyRMSD.matrixHandler import MatrixHandler
+    import pyRMSD.RMSDCalculator
 except ImportError:
     pyRMSD = None
     import Bio.PDB
@@ -177,14 +179,15 @@ def parse_anchor_data( anchor_file ):
                 anchor_points[int(split_line[1])] = (float(split_line[2]), float(split_line[3]), float(split_line[4]))
     return anchor_points
 
-def calc_rms(ref_atoms, alt_atoms):
-    assert( len(ref_atoms) == len(alt_atoms) )
+def calc_rms(ref_coords, alt_coords):
+    assert( len(ref_coords) == len(alt_coords) )
     if pyRMSD:
-        pass
+        calculator = pyRMSD.RMSDCalculator.RMSDCalculator("QCP_SERIAL_CALCULATOR", np.array([ref_coords, alt_coords]))
+        return calculator.pairwiseRMSDMatrix()[0]
     else:
-        print ref_atoms
-        print alt_atoms
         super_imposer = Bio.PDB.Superimposer()
+        ref_atoms = [Atom.Atom('CA', coords, 0.0, 1.0, '', ' CA ', i+1, element='C') for i, coords in enumerate(ref_coords)]
+        alt_atoms = [Atom.Atom('CA', coords, 0.0, 1.0, '', ' CA ', i+1, element='C') for i, coords in enumerate(alt_coords)]
         super_imposer.set_atoms(ref_atoms, alt_atoms)
         return super_imposer.rms
 
