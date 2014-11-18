@@ -109,6 +109,9 @@ class Fragment:
 
     def __len__ (self):
         return self.length
+    
+    def __repr__(self):
+        return str(self.get_coords())
 
 class FragmentPositionData:
     def __init__ (self, start_position):
@@ -126,6 +129,9 @@ class FragmentPositionData:
             self.length = len(new_fragment)
             self.end_position = self.start_position + self.length
         self.fragment_list.append( new_fragment )
+
+    def __iter__(self):
+        return iter(self.fragment_list)
 
     def __getitem__(self, key):
         return self.fragment_list[key]
@@ -215,14 +221,19 @@ def main():
     path_data = parse_path_data( args.path_file )
     anchor_points = parse_anchor_data( args.anchor_file )
     r = Reporter('calculating RMS for all paths vs. all first fragments for each position', entries='paths')
-    r.total_count = len(path_data) * len(fragment_data)
+    r.total_count = len(path_data[:50])
     print 'total count:', r.total_count
-    for i, path_coords in enumerate([[anchor_points[x] for x in path] for path in path_data]):
+    for i, path_coords in enumerate([[anchor_points[x] for x in path] for path in path_data[:50]]):
         path_length = len(path_coords)
-        for fragment in [x[0] for x in fragment_data.values()]:
-            fragment_coords = fragment.get_coords()
-            r.increment_report()
-            rms = calc_rms(fragment_coords, path_coords)
+        best_rms = float("inf")
+        rms_results = []
+        for fragment_position in fragment_data.values():
+            for j, fragment in enumerate(fragment_position):
+                fragment_coords = fragment.get_coords()
+                rms = calc_rms(fragment_coords, path_coords)
+                rms_results.append( (rms, fragment_position.start_position, j) )
+        rms_results.sort()
+        r.increment_report()
 
     r.done()
 
