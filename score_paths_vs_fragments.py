@@ -18,11 +18,13 @@ import ctypes
 import multiprocessing
 from multiprocessing.sharedctypes import Value, Array, RawArray
 
+# Use pyRMSD for calculations if available as it's much faster than BioPython
 try:
     import pyRMSD
     from pyRMSD.matrixHandler import MatrixHandler
     import pyRMSD.RMSDCalculator
     from pyRMSD.availableCalculators import availableCalculators
+    # Use CUDA for GPU calculations, if avialable
     if 'QCP_CUDA_MEM_CALCULATOR' in availableCalculators():
         pyrmsd_calc = 'QCP_CUDA_MEM_CALCULATOR'
     else:
@@ -131,6 +133,8 @@ def parse_fragment_data(frag_file):
 
     f.close()
 
+    # Even though there are these nice Python objects with all the data in it,
+    # here they are converted to nasty C-style arrays to be shared among processes
     global coord_array
     global starting_position_array
     global fragment_number_array
@@ -259,6 +263,7 @@ def main():
 def rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count):
     try:
         outer_results = []
+        # Outer loop: loop through all paths assigned to this process
         for path_num, path_coords in zip(path_nums_list, path_coords_list):
             rms_results = []
 
@@ -266,6 +271,7 @@ def rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, t
             last_fragment_number = fragment_number_array[0]
             last_starting_position = starting_position_array[0]
             coord_array_index = 0
+            # Inner loop: loop through all fragments to RMS against outer path
             for i in xrange(len(starting_position_array)):
                 starting_position = starting_position_array[i]
                 fragment_number = fragment_number_array[i]
