@@ -12,6 +12,7 @@ import time
 import math
 import gc
 import traceback
+import json
 
 import ctypes
 import multiprocessing
@@ -237,6 +238,10 @@ def main():
     completion_time = time.time()
     print 'Finished! Processed %d %s, took %.3f seconds\n' % (n, 'paths', completion_time-starting_time)
 
+    print 'Dumping json'
+    with open('results.json', 'w') as f:
+        json.dump(results_dict, f)
+
 def rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count):
     try:
         outer_results = []
@@ -265,7 +270,7 @@ def rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, t
                 coord_array_index += 3
 
             rms_results.sort()
-            outer_results.append( (path_num, rms_results) )
+            outer_results.append( (path_num, rms_results[:100]) )
 
             with reporter_n.get_lock():
                 reporter_n.value += 1
