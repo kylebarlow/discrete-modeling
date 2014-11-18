@@ -10,6 +10,7 @@ import gzip
 import io
 import time
 import math
+import gc
 
 import ctypes
 import multiprocessing
@@ -248,52 +249,64 @@ def main():
     print 'Loading anchor point data'
     anchor_points = parse_anchor_data( args.anchor_file )
 
-    pool = multiprocessing.Pool()
+    cpu_count = multiprocessing.cpu_count()
+    pool = multiprocessing.Pool(cpu_count)
     results_dict = {}
-    r = Reporter('calculating RMS for all paths vs. all first fragments for each position', entries='paths')
-    r.total_count = len(path_data)
+    r = Reporter('calculating RMS for all paths vs. all first fragments for each position', entries='cpu jobs')
+    r.total_count = cpu_count
 
-    def helper_callback(results_tuple):
-        path_number, rms_results = results_tuple
-        results_dict[path_number] = rms_results
-        r.increment_report()
+    def helper_callback(outer_results):
+        for results_tuple in outer_results:
+            path_number, rms_results = results_tuple
+            results_dict[path_number] = rms_results
+            r.increment_report()
 
+    path_nums_for_jobs = [[] for x in xrange(cpu_count)]
+    path_coords_for_jobs = [[] for x in xrange(cpu_count)]
     for i, path_coords in enumerate([[anchor_points[x] for x in path] for path in path_data]):
-        path_length = len(path_coords)
-        best_rms = float("inf")
-        # helper_callback(rms_against_all_fragments(i, path_coords))
-        pool.apply_async(rms_against_all_fragments, (i, path_coords), callback=helper_callback)
+        path_nums_for_jobs[ i%cpu_count ].append( i )
+        path_coords_for_jobs[ i%cpu_count ].append( path_coords )
+
+    for path_nums_list, path_coords_list in zip(path_nums_for_jobs, path_coords_for_jobs):
+        # Single thread version
+        # helper_callback( rms_against_all_fragments(path_nums_list, path_coords_list) )
+        # Multi thread version
+        pool.apply_async(rms_against_all_fragments, (path_nums_list, path_coords_list), callback=helper_callback)
         
     pool.close()
     pool.join()
     r.done()
 
-def rms_against_all_fragments(path_number, path_coords):
-    rms_results = []
+def rms_against_all_fragments(path_nums_list, path_coords_list):
+    outer_results = []
+    for path_num, path_coords in zip(path_nums_list, path_coords_list):
+        rms_results = []
 
-    fragment_coords = []
-    last_fragment_number = fragment_number_array[0]
-    last_starting_position = starting_position_array[0]
-    coord_array_index = 0
-    for i in xrange(len(starting_position_array)):
-        starting_position = starting_position_array[i]
-        fragment_number = fragment_number_array[i]
-        if (starting_position != last_starting_position) or (fragment_number != last_fragment_number):
-            rms = calc_rms(fragment_coords, path_coords)
-            rms_results.append( (rms, last_starting_position, last_fragment_number) )
-            fragment_coords = []
-            last_fragment_number = fragment_number
-            last_starting_position = starting_position
+        fragment_coords = []
+        last_fragment_number = fragment_number_array[0]
+        last_starting_position = starting_position_array[0]
+        coord_array_index = 0
+        for i in xrange(len(starting_position_array)):
+            starting_position = starting_position_array[i]
+            fragment_number = fragment_number_array[i]
+            if (starting_position != last_starting_position) or (fragment_number != last_fragment_number):
+                rms = calc_rms(fragment_coords, path_coords)
+                rms_results.append( (rms, last_starting_position, last_fragment_number) )
+                fragment_coords = []
+                last_fragment_number = fragment_number
+                last_starting_position = starting_position
 
-        fragment_coords.append((
-            coord_array[coord_array_index],
-            coord_array[coord_array_index+1],
-            coord_array[coord_array_index+2]
-        ))
-        coord_array_index += 3
-            
-    rms_results.sort()
-    return (path_number, rms_results)
+            fragment_coords.append((
+                coord_array[coord_array_index],
+                coord_array[coord_array_index+1],
+                coord_array[coord_array_index+2]
+            ))
+            coord_array_index += 3
+
+        rms_results.sort()
+        outer_results.append( (path_num, rms_results) )
+
+    return outer_results
 
 if __name__ == "__main__":
     main()
