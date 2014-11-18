@@ -22,6 +22,11 @@ try:
     import pyRMSD
     from pyRMSD.matrixHandler import MatrixHandler
     import pyRMSD.RMSDCalculator
+    from pyRMSD.availableCalculators import availableCalculators
+    if 'QCP_CUDA_MEM_CALCULATOR' in availableCalculators():
+        pyrmsd_calc = 'QCP_CUDA_MEM_CALCULATOR'
+    else:
+        pyrmsd_calc = 'QCP_SERIAL_CALCULATOR'
 except ImportError:
     print 'Warning: could not import faster RMSD module. Falling back to slower biopython...'
     pyRMSD = None
@@ -172,7 +177,7 @@ def calc_rms(ref_coords, alt_coords):
     # print ref_coords, alt_coords
     assert( len(ref_coords) == len(alt_coords) )
     if pyRMSD:
-        calculator = pyRMSD.RMSDCalculator.RMSDCalculator("QCP_SERIAL_CALCULATOR", np.array([ref_coords, alt_coords]))
+        calculator = pyRMSD.RMSDCalculator.RMSDCalculator(pyrmsd_calc, np.array([ref_coords, alt_coords]))
         return calculator.pairwiseRMSDMatrix()[0]
     else:
         super_imposer = Bio.PDB.Superimposer()
@@ -193,6 +198,10 @@ def main():
     parser.add_argument('-a', '--anchor_file',
                         required = True,
                         help = 'Anchor file to read from')
+    parser.add_argument('--single_thread',
+                        default = False,
+                        action = 'store_true',
+                        help = 'Do not use multiprocessing')
 
     args = parser.parse_args()
 
@@ -207,8 +216,11 @@ def main():
     print 'Loading anchor point data'
     anchor_points = parse_anchor_data( args.anchor_file )
 
-    cpu_count = multiprocessing.cpu_count()
-    pool = multiprocessing.Pool(cpu_count)
+    if args.single_thread:
+        cpu_count = 1
+    else:
+        cpu_count = multiprocessing.cpu_count()
+        pool = multiprocessing.Pool(cpu_count)
     results_dict = {}
 
     print 'Starting calculating RMS for all paths vs. all first fragments for each position'
@@ -227,13 +239,14 @@ def main():
         path_coords_for_jobs[ i%cpu_count ].append( path_coords )
 
     for path_nums_list, path_coords_list in zip(path_nums_for_jobs, path_coords_for_jobs):
-        # Single thread version
-        # helper_callback( rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count) )
-        # Multi thread version
-        pool.apply_async(rms_against_all_fragments, (path_nums_list, path_coords_list, starting_time, total_count), callback=helper_callback)
-        
-    pool.close()
-    pool.join()
+        if args.single_thread:
+            helper_callback( rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count) )
+        else:
+            pool.apply_async(rms_against_all_fragments, (path_nums_list, path_coords_list, starting_time, total_count), callback=helper_callback)
+
+    if not args.single_thread:
+        pool.close()
+        pool.join()
 
     n = int(reporter_n.value)
     completion_time = time.time()
