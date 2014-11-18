@@ -11,6 +11,7 @@ import io
 import time
 import math
 import gc
+import traceback
 
 import ctypes
 import multiprocessing
@@ -24,53 +25,6 @@ except ImportError:
     pyRMSD = None
     import Bio.PDB
     import Bio.PDB.Atom as Atom
-
-class Reporter:
-    def __init__(self,task,entries='files',print_output=True):
-        self.print_output=print_output
-        self.start=time.time()
-        self.entries=entries
-        self.lastreport=self.start
-        self.task=task
-        self.report_interval=1 # Interval to print progress (seconds)
-        self.n=0
-        self.completion_time = None
-        if self.print_output:
-            print '\nStarting '+task
-        self.total_count = None # Total tasks to be processed
-    def set_total_count(self, x):
-        self.total_count = x
-    def report(self,n):
-        self.n=n
-        t=time.time()
-        if self.print_output and self.lastreport<(t-self.report_interval):
-            self.lastreport=t
-            if self.total_count:
-                percent_done = float(self.n)/float(self.total_count)
-                time_now = time.time()
-                est_total_time = (time_now-self.start) * (1.0/percent_done)
-                time_remaining = est_total_time - (time_now-self.start)
-                minutes_remaining = math.floor(time_remaining/60.0)
-                seconds_remaining = int(time_remaining-(60*minutes_remaining))
-                sys.stdout.write("  Processed: "+str(n)+" "+self.entries+" (%.1f%%) %02d:%02d\r"%(percent_done*100.0, minutes_remaining, seconds_remaining) )
-            else:
-                sys.stdout.write("  Processed: "+str(n)+" "+self.entries+"\r" )
-            sys.stdout.flush()
-    def increment_report(self):
-        self.report(self.n+1)
-    def decrement_report(self):
-        self.report(self.n-1)
-    def add_to_report(self,x):
-        self.report(self.n+x)
-    def done(self):
-        self.completion_time = time.time()
-        if self.print_output:
-            print 'Done %s, processed %d %s, took %.3f seconds\n' % (self.task,self.n,self.entries,self.completion_time-self.start)
-    def elapsed_time(self):
-        if self.completion_time:
-            return self.completion_time - self.start
-        else:
-            return time.time() - self.start
 
 class Fragment:
     def __init__ (self, split_lines):
@@ -173,6 +127,8 @@ def parse_fragment_data(frag_file):
     global coord_array
     global starting_position_array
     global fragment_number_array
+    global reporter_n
+    reporter_n = multiprocessing.Value('L', 0)
     coord_array = multiprocessing.sharedctypes.Array('d', coordinate_count*3, lock=False)
     starting_position_array = multiprocessing.sharedctypes.Array('L', coordinate_count, lock=False)
     fragment_number_array = multiprocessing.sharedctypes.Array('L', coordinate_count, lock=False)
@@ -252,14 +208,15 @@ def main():
     cpu_count = multiprocessing.cpu_count()
     pool = multiprocessing.Pool(cpu_count)
     results_dict = {}
-    r = Reporter('calculating RMS for all paths vs. all first fragments for each position', entries='cpu jobs')
-    r.total_count = cpu_count
+
+    print 'Starting calculating RMS for all paths vs. all first fragments for each position'
+    total_count = len(path_data)
+    starting_time = time.time()
 
     def helper_callback(outer_results):
         for results_tuple in outer_results:
             path_number, rms_results = results_tuple
             results_dict[path_number] = rms_results
-            r.increment_report()
 
     path_nums_for_jobs = [[] for x in xrange(cpu_count)]
     path_coords_for_jobs = [[] for x in xrange(cpu_count)]
@@ -269,44 +226,72 @@ def main():
 
     for path_nums_list, path_coords_list in zip(path_nums_for_jobs, path_coords_for_jobs):
         # Single thread version
-        # helper_callback( rms_against_all_fragments(path_nums_list, path_coords_list) )
+        # helper_callback( rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count) )
         # Multi thread version
-        pool.apply_async(rms_against_all_fragments, (path_nums_list, path_coords_list), callback=helper_callback)
+        pool.apply_async(rms_against_all_fragments, (path_nums_list, path_coords_list, starting_time, total_count), callback=helper_callback)
         
     pool.close()
     pool.join()
-    r.done()
 
-def rms_against_all_fragments(path_nums_list, path_coords_list):
-    outer_results = []
-    for path_num, path_coords in zip(path_nums_list, path_coords_list):
-        rms_results = []
+    n = int(reporter_n.value)
+    completion_time = time.time()
+    print 'Finished! Processed %d %s, took %.3f seconds\n' % (n, 'paths', completion_time-starting_time)
 
-        fragment_coords = []
-        last_fragment_number = fragment_number_array[0]
-        last_starting_position = starting_position_array[0]
-        coord_array_index = 0
-        for i in xrange(len(starting_position_array)):
-            starting_position = starting_position_array[i]
-            fragment_number = fragment_number_array[i]
-            if (starting_position != last_starting_position) or (fragment_number != last_fragment_number):
-                rms = calc_rms(fragment_coords, path_coords)
-                rms_results.append( (rms, last_starting_position, last_fragment_number) )
-                fragment_coords = []
-                last_fragment_number = fragment_number
-                last_starting_position = starting_position
+def rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count):
+    try:
+        outer_results = []
+        for path_num, path_coords in zip(path_nums_list, path_coords_list):
+            rms_results = []
 
-            fragment_coords.append((
-                coord_array[coord_array_index],
-                coord_array[coord_array_index+1],
-                coord_array[coord_array_index+2]
-            ))
-            coord_array_index += 3
+            fragment_coords = []
+            last_fragment_number = fragment_number_array[0]
+            last_starting_position = starting_position_array[0]
+            coord_array_index = 0
+            for i in xrange(len(starting_position_array)):
+                starting_position = starting_position_array[i]
+                fragment_number = fragment_number_array[i]
+                if (starting_position != last_starting_position) or (fragment_number != last_fragment_number):
+                    rms = calc_rms(fragment_coords, path_coords)
+                    rms_results.append( (rms, last_starting_position, last_fragment_number) )
+                    fragment_coords = []
+                    last_fragment_number = fragment_number
+                    last_starting_position = starting_position
 
-        rms_results.sort()
-        outer_results.append( (path_num, rms_results) )
+                fragment_coords.append((
+                    coord_array[coord_array_index],
+                    coord_array[coord_array_index+1],
+                    coord_array[coord_array_index+2]
+                ))
+                coord_array_index += 3
 
-    return outer_results
+            rms_results.sort()
+            outer_results.append( (path_num, rms_results) )
+
+            with reporter_n.get_lock():
+                reporter_n.value += 1
+
+                n = reporter_n.value
+                t = time.time()
+                percent_done = float(n)/float(total_count)
+                time_now = time.time()
+                est_total_time = (time_now-starting_time) * (1.0/percent_done)
+                time_remaining = est_total_time - (time_now-starting_time)
+                minutes_remaining = math.floor(time_remaining/60.0)
+                seconds_remaining = int(time_remaining-(60*minutes_remaining))
+                sys.stdout.write("  Processed: "+str(n)+" paths (%.1f%%) %02d:%02d\r"%(percent_done*100.0, minutes_remaining, seconds_remaining) )
+                sys.stdout.flush()
+
+        return outer_results
+
+    except Exception as e:
+        print('Caught exception in worker thread')
+
+        # This prints the type, value, and stack trace of the
+        # current exception being handled.
+        traceback.print_exc()
+
+        print()
+        raise e
 
 if __name__ == "__main__":
     main()
