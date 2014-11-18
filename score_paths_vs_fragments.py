@@ -8,14 +8,64 @@ import sys
 import argparse
 import gzip
 import io
+import time
+import math
 
 try:
     import pyRMSD
 except ImportError:
+    pyRMSD = None
     import Bio.PDB
     import Bio.PDB.Atom as Atom
 
-class FragmentData:
+class Reporter:
+    def __init__(self,task,entries='files',print_output=True):
+        self.print_output=print_output
+        self.start=time.time()
+        self.entries=entries
+        self.lastreport=self.start
+        self.task=task
+        self.report_interval=1 # Interval to print progress (seconds)
+        self.n=0
+        self.completion_time = None
+        if self.print_output:
+            print '\nStarting '+task
+        self.total_count = None # Total tasks to be processed
+    def set_total_count(self, x):
+        self.total_count = x
+    def report(self,n):
+        self.n=n
+        t=time.time()
+        if self.print_output and self.lastreport<(t-self.report_interval):
+            self.lastreport=t
+            if self.total_count:
+                percent_done = float(self.n)/float(self.total_count)
+                time_now = time.time()
+                est_total_time = (time_now-self.start) * (1.0/percent_done)
+                time_remaining = est_total_time - (time_now-self.start)
+                minutes_remaining = math.floor(time_remaining/60.0)
+                seconds_remaining = int(time_remaining-(60*minutes_remaining))
+                sys.stdout.write("  Processed: "+str(n)+" "+self.entries+" (%.1f%%) %02d:%02d\r"%(percent_done*100.0, minutes_remaining, seconds_remaining) )
+            else:
+                sys.stdout.write("  Processed: "+str(n)+" "+self.entries+"\r" )
+            sys.stdout.flush()
+    def increment_report(self):
+        self.report(self.n+1)
+    def decrement_report(self):
+        self.report(self.n-1)
+    def add_to_report(self,x):
+        self.report(self.n+x)
+    def done(self):
+        self.completion_time = time.time()
+        if self.print_output:
+            print 'Done %s, processed %d %s, took %.3f seconds\n' % (self.task,self.n,self.entries,self.completion_time-self.start)
+    def elapsed_time(self):
+        if self.completion_time:
+            return self.completion_time - self.start
+        else:
+            return time.time() - self.start
+
+class Fragment:
     def __init__ (self, split_lines):
         self.resnum_list = []
         self.aa_list = []
@@ -47,12 +97,39 @@ class FragmentData:
             self.z_list.append( float(data[10]) )
 
         self.length = len(split_lines)
+        self.coords_cached = False
 
     def get_coords(self):
-        return [(x, y, z) for x, y, z in zip(self.x_list, self.y_list, self.z_list)]
+        if not self.coords_cached:
+            self.coords = [(x, y, z) for x, y, z in zip(self.x_list, self.y_list, self.z_list)]
+            self.coords_cached = True
+        return self.coords
 
     def __len__ (self):
         return self.length
+
+class FragmentPositionData:
+    def __init__ (self, start_position):
+        self.start_position = start_position
+        self.length = None
+        self.fragment_list = []
+        self.end_position = None
+
+    def add_fragment(self, new_fragment, start_position):
+        assert( self.start_position == start_position )
+
+        if self.length:
+            assert( self.length == len(new_fragment) )
+        else:
+            self.length = len(new_fragment)
+            self.end_position = self.start_position + self.length
+        self.fragment_list.append( new_fragment )
+
+    def __getitem__(self, key):
+        return self.fragment_list[key]
+
+    def __len__(self):
+        return len(self.fragment_list)
 
 def parse_fragment_data(frag_file):
     fragment_data = {}
@@ -63,13 +140,20 @@ def parse_fragment_data(frag_file):
         f = open(frag_file, 'r')
 
     split_lines = []
+    current_start_position = None
     for line in f:
         split_line = line.strip().split()
         if len(split_line) >= 11:
             split_lines.append(split_line)
+        elif len(split_line) == 4:
+            if 'position' in split_line[0]:
+                current_start_position = int(split_line[1])
         elif len(split_line) == 0 and len(split_lines) > 0:
-            fd = FragmentData(split_lines)
-            fragment_data[len(fd)] = fd
+            fd = Fragment(split_lines)
+            assert( current_start_position )
+            if current_start_position not in fragment_data:
+                fragment_data[current_start_position] = FragmentPositionData(current_start_position)
+            fragment_data[current_start_position].add_fragment( fd, current_start_position )
             split_lines = []
 
     f.close()
@@ -98,6 +182,8 @@ def calc_rms(ref_atoms, alt_atoms):
     if pyRMSD:
         pass
     else:
+        print ref_atoms
+        print alt_atoms
         super_imposer = Bio.PDB.Superimposer()
         super_imposer.set_atoms(ref_atoms, alt_atoms)
         return super_imposer.rms
@@ -122,14 +208,20 @@ def main():
     assert( os.path.isfile( args.anchor_file) )
 
     fragment_data = parse_fragment_data( args.fragment_file )
-    all_coords = [x.get_coords() for x in fragment_data.values()]
+    # all_coords = [x.get_coords() for x in fragment_data.values()]
     path_data = parse_path_data( args.path_file )
     anchor_points = parse_anchor_data( args.anchor_file )
+    r = Reporter('calculating RMS for all paths vs. all first fragments for each position', entries='paths')
+    r.total_count = len(path_data) * len(fragment_data)
+    print 'total count:', r.total_count
     for i, path_coords in enumerate([[anchor_points[x] for x in path] for path in path_data]):
         path_length = len(path_coords)
-        print len(fragment_data[path_length])
-        for j, fragment_coords in enumerate(fragment_data[path_length].get_coords()):
-            print i, j, path_coords, fragment_coords
+        for fragment in [x[0] for x in fragment_data.values()]:
+            fragment_coords = fragment.get_coords()
+            r.increment_report()
+            rms = calc_rms(fragment_coords, path_coords)
+
+    r.done()
 
 if __name__ == "__main__":
     main()
