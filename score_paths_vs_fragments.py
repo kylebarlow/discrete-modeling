@@ -18,7 +18,7 @@ import ctypes
 import multiprocessing
 from multiprocessing.sharedctypes import Value, Array, RawArray
 
-# Use pyRMSD for calculations if available as it's much faster than BioPython
+# Use pyRMSD for RMSD calculations if available as it's much faster than BioPython
 try:
     import pyRMSD
     from pyRMSD.matrixHandler import MatrixHandler
@@ -34,6 +34,16 @@ except ImportError:
     pyRMSD = None
     import Bio.PDB
     import Bio.PDB.Atom as Atom
+
+# Use MDAnalysis for distance calculations if available
+try:
+    import MDAnalysis
+    import MDAnalysis.analysis
+    # from MDAnalysis.analysis import distances
+except ImportError:
+    print 'Warning: could not import faster distance module. Falling back...'
+    MDAnalysis = None
+    sys.exit(0)
 
 class Fragment:
     def __init__ (self, split_lines):
@@ -162,11 +172,18 @@ def parse_fragment_data(frag_file):
 
 def parse_path_data( path_file ):
     path_data = []
+    path_length = None
     with open(path_file, 'r') as f:
         for line in f:
             if not line.startswith('#'):
+                new_path = [int(x) for x in line.strip().split()] 
+                new_path_length = len(new_path)
+                if path_length:
+                    assert( path_length == new_path_length )
+                else:
+                    path_length = new_path_length
                 path_data.append( [int(x) for x in line.strip().split()] )
-    return path_data
+    return (path_data, path_length)
 
 def parse_anchor_data( anchor_file ):
     anchor_points = {}
@@ -176,6 +193,19 @@ def parse_anchor_data( anchor_file ):
             if len( split_line ) == 6:
                 anchor_points[int(split_line[1])] = (float(split_line[2]), float(split_line[3]), float(split_line[4]))
     return anchor_points
+
+def calc_drms(ref_coords, alt_coords, ref_distances, alt_distances):
+    assert( len(ref_coords) == len(alt_coords) )
+    if MDAnalysis:
+        MDAnalysis.analysis.distances.self_distance_array(ref_coords, result=ref_distances)
+        MDAnalysis.analysis.distances.self_distance_array(alt_coords, result=alt_distances)
+        return np.sum( np.absolute( ref_distances-alt_distances ) )
+    else:
+        total_drms = 0
+        for atom1_ref, atom1_alt in zip(ref_coords, alt_coords):
+            for atom2_ref, atom2_alt in zip(ref_coords, alt_coords):
+                total_drms += abs(abs(np.linalg.norm(np.array(atom2_ref)-np.array(atom1_ref)))-abs(np.linalg.norm(np.array(atom2_alt)-np.array(atom1_alt))))
+        return total_drms
 
 def calc_rms(ref_coords, alt_coords):
     # print ref_coords, alt_coords
@@ -216,7 +246,7 @@ def main():
     print 'Loading fragment data'
     fragment_position_data = parse_fragment_data( args.fragment_file )
     print 'Loading path data'
-    path_data = parse_path_data( args.path_file )
+    path_data, path_length = parse_path_data( args.path_file )
     print 'Loading anchor point data'
     anchor_points = parse_anchor_data( args.anchor_file )
 
@@ -244,9 +274,9 @@ def main():
 
     for path_nums_list, path_coords_list in zip(path_nums_for_jobs, path_coords_for_jobs):
         if args.single_thread:
-            helper_callback( rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count) )
+            helper_callback( paths_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count, path_length) )
         else:
-            pool.apply_async(rms_against_all_fragments, (path_nums_list, path_coords_list, starting_time, total_count), callback=helper_callback)
+            pool.apply_async(paths_against_all_fragments, (path_nums_list, path_coords_list, starting_time, total_count, path_length), callback=helper_callback)
 
     if not args.single_thread:
         pool.close()
@@ -260,32 +290,41 @@ def main():
     with open('results.json', 'w') as f:
         json.dump(results_dict, f)
 
-def rms_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count):
+def paths_against_all_fragments(path_nums_list, path_coords_list, starting_time, total_count, path_length):
     try:
         outer_results = []
         # Outer loop: loop through all paths assigned to this process
         for path_num, path_coords in zip(path_nums_list, path_coords_list):
+            path_coords = [np.float32(x) for x in path_coords]
             rms_results = []
 
             fragment_coords = []
             last_fragment_number = fragment_number_array[0]
             last_starting_position = starting_position_array[0]
             coord_array_index = 0
+
+            # Pre-allocated arrays for DRMS
+            fragment_distances = np.zeros(path_length*(path_length-1)/2, dtype=np.float64)
+            path_distances = np.zeros(path_length*(path_length-1)/2, dtype=np.float64)            
+
             # Inner loop: loop through all fragments to RMS against outer path
             for i in xrange(len(starting_position_array)):
                 starting_position = starting_position_array[i]
                 fragment_number = fragment_number_array[i]
                 if (starting_position != last_starting_position) or (fragment_number != last_fragment_number):
-                    rms = calc_rms(fragment_coords, path_coords)
-                    rms_results.append( (rms, last_starting_position, last_fragment_number) )
+                    # rms = calc_rms(fragment_coords, path_coords)
+
+                    drms = calc_drms(np.array(fragment_coords), np.array(path_coords), fragment_distances, path_distances)
+
+                    rms_results.append( (drms, last_starting_position, last_fragment_number) )
                     fragment_coords = []
                     last_fragment_number = fragment_number
                     last_starting_position = starting_position
 
                 fragment_coords.append((
-                    coord_array[coord_array_index],
-                    coord_array[coord_array_index+1],
-                    coord_array[coord_array_index+2]
+                    np.float32(coord_array[coord_array_index]),
+                    np.float32(coord_array[coord_array_index+1]),
+                    np.float32(coord_array[coord_array_index+2])
                 ))
                 coord_array_index += 3
 
